@@ -16,6 +16,7 @@ use std::collections::binary_heap::PeekMut;
 use std::fmt::format;
 use std::fs::File;
 use std::io::{Read, Write};
+use std::ops::Deref;
 use std::path::PathBuf;
 use std::process::{Child, Command, Stdio};
 use std::rc::Rc;
@@ -48,11 +49,11 @@ pub struct AmpMessageState {
     pub stop_reason: Option<String>,
 }
 
-#[derive(Deserialize, Serialize, Debug, Clone)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct AmpEditFileToolCall {
-    pub path: String,
+    pub path: Option<String>,
     pub old_str: Option<String>,
-    pub new_str: String,
+    pub new_str: Option<String>,
 }
 use serde::{Deserialize, Serialize};
 
@@ -82,8 +83,8 @@ pub struct AmpThinkingContentBlock {
 #[serde(rename_all = "camelCase")]
 pub struct AmpToolUseContentBlock {
     pub id: String,
-    pub name: AmpTool,
-    pub input: serde_json::Value,
+    #[serde(flatten)]
+    pub content: AmpTool,
 }
 
 #[derive(Deserialize, Serialize, Debug, Clone)]
@@ -94,13 +95,13 @@ pub struct AmpToolResultContentBlock {
     pub run: serde_json::Value,
 }
 
-#[derive(Deserialize, Serialize, Debug, Clone)]
+#[derive(Deserialize, Serialize, Debug, Clone, PartialEq, Eq)]
 #[serde(rename_all = "lowercase")]
 pub struct AmpPlanWriteToolCall {
     pub todos: Vec<AmpPlanTodo>,
 }
 
-#[derive(Deserialize, Serialize, Debug, Clone)]
+#[derive(Deserialize, Serialize, Debug, Clone, PartialEq, Eq)]
 #[serde(rename_all = "lowercase")]
 pub struct AmpPlanTodo {
     pub id: String,
@@ -109,7 +110,7 @@ pub struct AmpPlanTodo {
     pub priority: AmpPlanTodoPriority,
 }
 
-#[derive(Deserialize, Serialize, Debug, Clone)]
+#[derive(Deserialize, Serialize, Debug, Clone, PartialEq, Eq)]
 #[serde(rename_all = "lowercase")]
 pub enum AmpPlanTodoStatus {
     Completed,
@@ -128,7 +129,7 @@ impl AmpPlanTodoStatus {
     }
 }
 
-#[derive(Deserialize, Serialize, Debug, Clone)]
+#[derive(Deserialize, Serialize, Debug, Clone, PartialEq, Eq)]
 #[serde(rename_all = "lowercase")]
 pub enum AmpPlanTodoPriority {
     High,
@@ -183,8 +184,8 @@ impl AmpConversation {
                         format!(
                             "**{}**",
                             &amp_tool_use_content_block
-                                .name
-                                .to_title(&amp_tool_use_content_block.input)
+                                .content
+                                .to_title(&amp_tool_use_content_block.content)
                         )
                     }
                     AmpContentBlock::ToolResult(_) => String::new(),
@@ -247,13 +248,12 @@ impl AmpDiff<AmpContentBlock> for AmpContentBlock {
                 }
             }
             (AmpContentBlock::ToolUse(a), AmpContentBlock::ToolUse(b)) => {
-                if a.id == b.id && a.name == b.name && a.input == b.input {
+                if a.id == b.id && a.content == b.content {
                     None
                 } else {
                     Some(AmpContentBlock::ToolUse(AmpToolUseContentBlock {
                         id: b.id.clone(),
-                        name: b.name.clone(),
-                        input: b.input.clone(),
+                        content: b.content.clone(),
                     }))
                 }
             }
@@ -301,195 +301,184 @@ impl AmpDiff<AmpMessage> for AmpMessage {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(tag = "name", content = "input")]
 pub enum AmpTool {
-    Bash,
+    Bash(AmpBashToolCall),
     #[serde(rename = "create_file")]
-    CreateFile,
+    CreateFile(AmpCreateToolCall),
     #[serde(rename = "edit_file")]
-    EditFile,
+    EditFile(AmpEditFileToolCall),
     #[serde(rename = "finder")]
-    Finder,
+    Finder(Value),
     #[serde(rename = "glob")]
-    Glob,
-    Grep,
+    Glob(Value),
+    Grep(Value),
     #[serde(rename = "mermaid")]
-    Mermaid,
+    Mermaid(Value),
     #[serde(rename = "oracle")]
-    Oracle,
-    Read,
+    Oracle(Value),
+    Read(AmpReadToolCall),
     #[serde(rename = "read_mcp_resource")]
-    ReadMcpResource,
+    ReadMcpResource(Value),
     #[serde(rename = "read_web_page")]
-    ReadWebPage,
-    Task,
+    ReadWebPage(AmpWebReadToolCall),
+    Task(AmpTaskToolCall),
     #[serde(rename = "todo_read")]
-    TodoRead,
+    TodoRead(Value),
     #[serde(rename = "todo_write")]
-    TodoWrite,
+    TodoWrite(AmpPlanWriteToolCall),
     #[serde(rename = "undo_edit")]
-    UndoEdit,
+    UndoEdit(Value),
     #[serde(rename = "web_search")]
-    WebSearch,
-    #[serde(other)]
-    Other,
+    WebSearch(AmpWebSearchToolCall),
+    #[serde(untagged)]
+    Other(Value),
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct AmpGrepToolResult {
+    result: Option<Vec<String>>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct AmpReadToolCall {
-    path: String,
+    path: Option<String>,
     read_range: Option<Vec<i32>>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct AmpCreateToolCall {
-    path: String,
-    content: String,
+    path: Option<String>,
+    content: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct AmpBashToolCall {
-    cmd: String,
+    cmd: Option<String>,
     cwd: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct AmpWebSearchToolCall {
-    query: String,
+    query: Option<String>,
     max_results: Option<u32>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct AmpWebReadToolCall {
-    url: String,
+    url: Option<String>,
     prompt: Option<String>,
     raw: Option<bool>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct AmpTaskToolCall {
-    prompt: String,
-    description: String,
+    prompt: Option<String>,
+    description: Option<String>,
 }
 
 impl AmpTool {
-    fn to_title(&self, content: &Value) -> String {
+    fn to_title(&self, content: &AmpTool) -> String {
         match self {
-            AmpTool::Oracle => "Consulting the Oracle".to_string(),
-            AmpTool::Read => {
-                let tool_call: Result<AmpReadToolCall, serde_json::Error> =
-                    serde_json::from_value(content.clone());
-
-                if let Ok(t) = tool_call {
-                    let path = PathBuf::from(&t.path);
+            AmpTool::Oracle(_) => "Consulting the Oracle".to_string(),
+            AmpTool::Read(content) => {
+                if let Some(path) = &content.path {
+                    let path = PathBuf::from(path);
                     let file_name = path
                         .file_name()
                         .unwrap_or_default()
                         .to_str()
                         .unwrap_or_default();
                     if path.is_file() {
-                        format!("Read [{}](file://{})", file_name, t.path)
+                        format!("Read [{}](file://{})", file_name, path.display())
                     } else {
-                        format!("Read {}", t.path)
+                        format!("Read {}", path.display())
                     }
                 } else {
                     "Reading file".to_string()
                 }
             }
-            AmpTool::ReadMcpResource => "Read mcp resource".to_string(),
-            AmpTool::ReadWebPage => {
-                let tool_call: Result<AmpWebReadToolCall, serde_json::Error> =
-                    serde_json::from_value(content.clone());
-
-                if let Ok(t) = tool_call {
-                    format!("Reading {}", t.url)
+            AmpTool::ReadMcpResource(_) => "Read mcp resource".to_string(),
+            AmpTool::ReadWebPage(content) => {
+                if let Some(url) = &content.url {
+                    format!("Reading {}", url)
                 } else {
                     "Read webpage".to_string()
                 }
             }
-            AmpTool::Task => "Sub agent".to_string(),
-            AmpTool::TodoRead => "Todo read".to_string(),
-            AmpTool::TodoWrite => "Todo write".to_string(),
-            AmpTool::UndoEdit => "Undo edit".to_string(),
-            AmpTool::WebSearch => {
-                let tool_call: Result<AmpWebSearchToolCall, serde_json::Error> =
-                    serde_json::from_value(content.clone());
-
-                if let Ok(t) = tool_call {
-                    format!("Searching for \"{}\"", t.query)
+            AmpTool::Task(_) => "Sub agent".to_string(),
+            AmpTool::TodoRead(_) => "Todo read".to_string(),
+            AmpTool::TodoWrite(_) => "Todo write".to_string(),
+            AmpTool::UndoEdit(_) => "Undo edit".to_string(),
+            AmpTool::WebSearch(content) => {
+                if let Some(query) = &content.query {
+                    format!("Searching for \"{}\"", query)
                 } else {
                     "Web search".to_string()
                 }
             }
-            AmpTool::Other => "Unknown".to_string(),
-            AmpTool::Bash => {
-                let tool_call: Result<AmpBashToolCall, serde_json::Error> =
-                    serde_json::from_value(content.clone());
-
-                if let Ok(t) = tool_call {
-                    t.cmd
+            AmpTool::Other(_) => "Unknown".to_string(),
+            AmpTool::Bash(content) => {
+                if let Some(cmd) = &content.cmd {
+                    cmd.clone()
                 } else {
                     "Bash".to_string()
                 }
             }
-            AmpTool::CreateFile => {
-                let tool_call: Result<AmpCreateToolCall, serde_json::Error> =
-                    serde_json::from_value(content.clone());
-                if let Ok(t) = tool_call {
-                    let path = PathBuf::from(&t.path);
+            AmpTool::CreateFile(content) => {
+                if let Some(path) = &content.path {
+                    let path = PathBuf::from(&path);
                     let file_name = path
                         .file_name()
                         .unwrap_or_default()
                         .to_str()
                         .unwrap_or_default();
 
-                    format!("Created [{}](file://{})", file_name, t.path)
+                    format!("Created [{}](file://{})", file_name, path.display())
                 } else {
                     "Creating file".to_string()
                 }
             }
-            AmpTool::EditFile => {
-                let data: Result<AmpEditFileToolCall, serde_json::Error> =
-                    serde_json::from_value(content.clone());
-
-                if let Ok(data) = data {
-                    let path = PathBuf::from(&data.path);
+            AmpTool::EditFile(content) => {
+                if let Some(path) = &content.path {
+                    let path = PathBuf::from(&path);
                     let file_name = path
                         .file_name()
                         .unwrap_or_default()
                         .to_str()
                         .unwrap_or_default();
-                    format!("Edited [{}](file://{})", file_name, data.path)
+                    format!("Edited [{}](file://{})", file_name, path.display())
                 } else {
                     "Editing file".to_string()
                 }
             }
-            AmpTool::Finder => "Finder".to_string(),
-            AmpTool::Glob => "Glob".to_string(),
-            AmpTool::Grep => "Grep".to_string(),
-            AmpTool::Mermaid => "Mermaid".to_string(),
+            AmpTool::Finder(_) => "Finder".to_string(),
+            AmpTool::Glob(_) => "Glob".to_string(),
+            AmpTool::Grep(_) => "Grep".to_string(),
+            AmpTool::Mermaid(_) => "Mermaid".to_string(),
         }
     }
 }
 
 fn amp_tool_to_tool_kind(amp_tool: &AmpTool) -> ToolKind {
     match amp_tool {
-        AmpTool::Bash => ToolKind::Execute,
-        AmpTool::CreateFile => ToolKind::Edit,
-        AmpTool::EditFile => ToolKind::Edit,
-        AmpTool::Finder => ToolKind::Search,
-        AmpTool::Glob => ToolKind::Execute,
-        AmpTool::Grep => ToolKind::Execute,
-        AmpTool::Mermaid => ToolKind::Other,
-        AmpTool::Oracle => ToolKind::Think,
-        AmpTool::Read => ToolKind::Read,
-        AmpTool::ReadMcpResource => ToolKind::Fetch,
-        AmpTool::ReadWebPage => ToolKind::Fetch,
-        AmpTool::Task => ToolKind::Think,
-        AmpTool::TodoRead => ToolKind::Think,
-        AmpTool::TodoWrite => ToolKind::Think,
-        AmpTool::UndoEdit => ToolKind::Edit,
-        AmpTool::WebSearch => ToolKind::Search,
-        AmpTool::Other => ToolKind::Other,
+        AmpTool::Bash(_) => ToolKind::Execute,
+        AmpTool::CreateFile(_) => ToolKind::Edit,
+        AmpTool::EditFile(_) => ToolKind::Edit,
+        AmpTool::Finder(_) => ToolKind::Search,
+        AmpTool::Glob(_) => ToolKind::Execute,
+        AmpTool::Grep(_) => ToolKind::Execute,
+        AmpTool::Mermaid(_) => ToolKind::Other,
+        AmpTool::Oracle(_) => ToolKind::Think,
+        AmpTool::Read(_) => ToolKind::Read,
+        AmpTool::ReadMcpResource(_) => ToolKind::Fetch,
+        AmpTool::ReadWebPage(_) => ToolKind::Fetch,
+        AmpTool::Task(_) => ToolKind::Think,
+        AmpTool::TodoRead(_) => ToolKind::Think,
+        AmpTool::TodoWrite(_) => ToolKind::Think,
+        AmpTool::UndoEdit(_) => ToolKind::Edit,
+        AmpTool::WebSearch(_) => ToolKind::Search,
+        AmpTool::Other(_) => ToolKind::Other,
     }
 }
 
@@ -536,15 +525,17 @@ impl AmpAgent {
         let mut contents = String::new();
         file.read_to_string(&mut contents).ok()?;
 
-        serde_json::from_str(&contents).ok()
+        match serde_json::from_str(&contents) {
+            Ok(conversation) => Some(conversation),
+            Err(e) => panic!("Failed to parse AMP thread: {}", e),
+        }
     }
 
     async fn process_conversation(
         &self,
         conversation: &AmpConversation,
         session_id: SessionId,
-        file_edits: &mut HashMap<String, AmpEditFileToolCall>,
-        tasks: &mut HashMap<String, AmpTaskToolCall>,
+        tool_calls: &mut HashMap<String, AmpTool>,
     ) {
         for message in &conversation.messages {
             for block in &message.content {
@@ -587,62 +578,38 @@ impl AmpAgent {
                     }
                     AmpContentBlock::ToolUse(tool_use_content_block) => {
                         let title = tool_use_content_block
-                            .name
-                            .to_title(&tool_use_content_block.input);
+                            .content
+                            .to_title(&tool_use_content_block.content);
                         let mut content = vec![];
-                        match tool_use_content_block.name {
-                            AmpTool::EditFile => {
-                                let data: Result<AmpEditFileToolCall, serde_json::Error> =
-                                    serde_json::from_value(tool_use_content_block.input.clone());
 
-                                if let Ok(data) = data {
-                                    file_edits
-                                        .entry(tool_use_content_block.id.clone())
-                                        .or_insert(data);
+                        tool_calls.insert(
+                            tool_use_content_block.id.clone(),
+                            tool_use_content_block.content.clone(),
+                        );
+                        match &tool_use_content_block.content {
+                            AmpTool::TodoWrite(input) => {
+                                let notification = SessionNotification {
+                                    session_id: session_id.clone(),
+                                    update: SessionUpdate::Plan(input.to_acp_plan()),
+                                    meta: None,
+                                };
 
-                                    continue;
+                                if let Err(e) =
+                                    self.client().session_notification(notification).await
+                                {
+                                    error!("Failed to send session notification: {:?}", e);
                                 }
+                                continue;
                             }
-                            AmpTool::TodoWrite => {
-                                let plan: Result<AmpPlanWriteToolCall, serde_json::Error> =
-                                    serde_json::from_value(tool_use_content_block.input.clone());
-
-                                if let Ok(plan) = plan {
-                                    let notification = SessionNotification {
-                                        session_id: session_id.clone(),
-                                        update: SessionUpdate::Plan(plan.to_acp_plan()),
-                                        meta: None,
-                                    };
-
-                                    if let Err(e) =
-                                        self.client().session_notification(notification).await
-                                    {
-                                        error!("Failed to send session notification: {:?}", e);
-                                    }
-                                    continue;
-                                }
-                            }
-                            AmpTool::CreateFile => {
-                                let tool_call: Result<AmpCreateToolCall, serde_json::Error> =
-                                    serde_json::from_value(tool_use_content_block.input.clone());
-                                if let Ok(t) = tool_call {
+                            AmpTool::CreateFile(input) => {
+                                if let Some(text) = input.content.clone() {
                                     content.push(ToolCallContent::Content {
                                         content: ContentBlock::Text(TextContent {
                                             annotations: None,
-                                            text: t.content,
+                                            text,
                                             meta: None,
                                         }),
                                     });
-                                }
-                            }
-                            AmpTool::Task => {
-                                let tool_call: Result<AmpTaskToolCall, serde_json::Error> =
-                                    serde_json::from_value(tool_use_content_block.input.clone());
-
-                                if let Ok(tool_call) = &tool_call {
-                                    tasks
-                                        .entry(tool_use_content_block.id.clone())
-                                        .or_insert(tool_call.clone());
                                 }
                             }
                             _ => {}
@@ -652,7 +619,7 @@ impl AmpAgent {
                             session_id: session_id.clone(),
                             update: SessionUpdate::ToolCall(ToolCall {
                                 id: ToolCallId(Arc::from(tool_use_content_block.id.clone())),
-                                kind: amp_tool_to_tool_kind(&tool_use_content_block.name),
+                                kind: amp_tool_to_tool_kind(&tool_use_content_block.content),
                                 status: ToolCallStatus::Pending,
                                 title,
                                 content,
@@ -670,153 +637,197 @@ impl AmpAgent {
                         }
                     }
                     AmpContentBlock::ToolResult(tool_result_content_block) => {
-                        let mut update = None;
-                        let mut line = None;
+                        dbg!(&tool_result_content_block.tool_use_id);
+                        dbg!(&tool_calls);
+                        let tool = tool_calls
+                            .get(&tool_result_content_block.tool_use_id)
+                            .unwrap();
 
-                        //check if theres a file edit for this tool call
-                        if let Some(file_edit) =
-                            file_edits.remove(&tool_result_content_block.tool_use_id)
-                        {
-                            if let Some(result) = &tool_result_content_block.run.get("result") {
-                                // Parse the diff to get the line numbers
-                                if let Some(diff) = result.get("diff") {
-                                    if let Some(diff_str) = diff.as_str() {
-                                        line = get_line_number_from_diff_str(diff_str);
-                                    }
-                                }
-                            }
-                            update = Some(ToolCallUpdate {
-                                id: ToolCallId(Arc::from(
-                                    tool_result_content_block.tool_use_id.clone(),
-                                )),
-                                fields: ToolCallUpdateFields {
-                                    kind: None,
-                                    status: Some(ToolCallStatus::Completed),
-                                    title: None,
-                                    content: Some(vec![ToolCallContent::Diff {
-                                        diff: Diff {
-                                            path: PathBuf::from(file_edit.path.clone()),
-                                            old_text: file_edit.old_str,
-                                            new_text: file_edit.new_str,
-                                            meta: None,
-                                        },
-                                    }]),
-                                    locations: Some(vec![ToolCallLocation {
-                                        path: PathBuf::from(file_edit.path.clone()),
-                                        line,
-                                        meta: None,
-                                    }]),
-                                    raw_input: None,
-                                    raw_output: None,
-                                },
-                                meta: None,
-                            });
-                        } else if tasks.contains_key(&tool_result_content_block.tool_use_id) {
-                            if let Some(progress) = tool_result_content_block.run.get("progress") {
-                                if let Some(thread_id) = progress.get("threadID") {
-                                    dbg!("hi");
-                                    loop {
-                                        let conversation = match self.get_amp_thread(SessionId(
-                                            Arc::from(thread_id.as_str().unwrap()),
-                                        )) {
-                                            Some(conversation) => conversation,
-                                            None => continue,
-                                        };
-                                        if let Err(e) = self
-                                            .client()
-                                            .session_notification(SessionNotification {
-                                                session_id: session_id.clone(),
-                                                update: SessionUpdate::ToolCallUpdate(
-                                                    ToolCallUpdate {
-                                                        id: ToolCallId(Arc::from(
-                                                            tool_result_content_block
-                                                                .tool_use_id
-                                                                .clone(),
-                                                        )),
-                                                        fields: ToolCallUpdateFields {
-                                                            kind: None,
-                                                            status: Some(ToolCallStatus::Completed),
-                                                            title: None,
-                                                            content: Some(vec![
-                                                                ToolCallContent::Content {
-                                                                    content: ContentBlock::Text(
-                                                                        TextContent {
-                                                                            text: conversation
-                                                                                .pretty_print(),
-                                                                            annotations: None,
-                                                                            meta: None,
-                                                                        },
-                                                                    ),
-                                                                },
-                                                            ]),
-                                                            locations: None,
-                                                            raw_input: None,
-                                                            raw_output: None,
-                                                        },
-                                                        meta: None,
-                                                    },
-                                                ),
-                                                meta: None,
-                                            })
-                                            .await
-                                        {
-                                            error!("Failed to send session notification: {:?}", e);
-                                        }
+                        let mut update = ToolCallUpdate {
+                            id: ToolCallId(Arc::from(
+                                tool_result_content_block.tool_use_id.clone(),
+                            )),
+                            fields: ToolCallUpdateFields {
+                                kind: None,
+                                status: Some(ToolCallStatus::Completed),
+                                title: None,
+                                content: None,
+                                locations: None,
+                                raw_input: None,
+                                raw_output: None,
+                            },
+                            meta: None,
+                        };
+                        match tool {
+                            AmpTool::EditFile(amp_edit_file_tool_call) => {
+                                if let Some(path) = &amp_edit_file_tool_call.path
+                                    && let Some(new_str) = &amp_edit_file_tool_call.new_str
+                                {
+                                    let mut line = None;
 
-                                        //check if the task finished
-                                        if let Some(state) =
-                                            &conversation.messages.last().unwrap().state
-                                        {
-                                            dbg!(&state);
-                                            if let Some(stop_reason) = &state.stop_reason {
-                                                dbg!(&stop_reason);
-                                                if stop_reason == "end_turn" {
-                                                    dbg!("Stopping");
-                                                    break;
-                                                }
+                                    if let Some(result) =
+                                        &tool_result_content_block.run.get("result")
+                                    {
+                                        // Parse the diff to get the line numbers
+                                        if let Some(diff) = result.get("diff") {
+                                            if let Some(diff_str) = diff.as_str() {
+                                                line = get_line_number_from_diff_str(diff_str);
                                             }
                                         }
-                                        sleep(Duration::from_millis(100)).await;
+                                    }
+                                    update.fields.content = Some(vec![ToolCallContent::Diff {
+                                        diff: Diff {
+                                            path: PathBuf::from(path.clone()),
+                                            old_text: amp_edit_file_tool_call.old_str.clone(),
+                                            new_text: new_str.clone(),
+                                            meta: None,
+                                        },
+                                    }]);
+                                    update.fields.locations = Some(vec![ToolCallLocation {
+                                        path: PathBuf::from(path.clone()),
+                                        line,
+                                        meta: None,
+                                    }]);
+                                }
+                            }
+                            AmpTool::Task(_) => {
+                                if let Some(progress) =
+                                    tool_result_content_block.run.get("progress")
+                                {
+                                    if let Some(thread_id) = progress.get("threadID") {
+                                        dbg!("hi");
+                                        loop {
+                                            let conversation = match self.get_amp_thread(SessionId(
+                                                Arc::from(thread_id.as_str().unwrap()),
+                                            )) {
+                                                Some(conversation) => conversation,
+                                                None => continue,
+                                            };
+                                            if let Err(e) = self
+                                                .client()
+                                                .session_notification(SessionNotification {
+                                                    session_id: session_id.clone(),
+                                                    update: SessionUpdate::ToolCallUpdate(
+                                                        ToolCallUpdate {
+                                                            id: ToolCallId(Arc::from(
+                                                                tool_result_content_block
+                                                                    .tool_use_id
+                                                                    .clone(),
+                                                            )),
+                                                            fields: ToolCallUpdateFields {
+                                                                kind: None,
+                                                                status: Some(
+                                                                    ToolCallStatus::Completed,
+                                                                ),
+                                                                title: None,
+                                                                content: Some(vec![
+                                                                    ToolCallContent::Content {
+                                                                        content: ContentBlock::Text(
+                                                                            TextContent {
+                                                                                text: conversation
+                                                                                    .pretty_print(),
+                                                                                annotations: None,
+                                                                                meta: None,
+                                                                            },
+                                                                        ),
+                                                                    },
+                                                                ]),
+                                                                locations: None,
+                                                                raw_input: None,
+                                                                raw_output: None,
+                                                            },
+                                                            meta: None,
+                                                        },
+                                                    ),
+                                                    meta: None,
+                                                })
+                                                .await
+                                            {
+                                                error!(
+                                                    "Failed to send session notification: {:?}",
+                                                    e
+                                                );
+                                            }
+
+                                            //check if the task finished
+                                            if let Some(state) =
+                                                &conversation.messages.last().unwrap().state
+                                            {
+                                                dbg!(&state);
+                                                if let Some(stop_reason) = &state.stop_reason {
+                                                    dbg!(&stop_reason);
+                                                    if stop_reason == "end_turn" {
+                                                        dbg!("Stopping");
+                                                        break;
+                                                    }
+                                                }
+                                            }
+                                            sleep(Duration::from_millis(100)).await;
+                                        }
                                     }
                                 }
                             }
-                        } else {
-                            update = Some(ToolCallUpdate {
-                                id: ToolCallId(Arc::from(
-                                    tool_result_content_block.tool_use_id.clone(),
-                                )),
-                                fields: ToolCallUpdateFields {
-                                    content: Some(vec![ToolCallContent::Content {
+                            AmpTool::Grep(_) => {
+                                //maybe we dont print this
+                                if let Ok(result) = serde_json::from_value::<AmpGrepToolResult>(
+                                    tool_result_content_block.run.clone(),
+                                ) {
+                                    update.fields.content = Some(vec![ToolCallContent::Content {
                                         content: ContentBlock::Text(TextContent {
-                                            text: tool_result_content_block.run.to_string(),
+                                            text: result
+                                                .result
+                                                .unwrap_or_default()
+                                                .iter()
+                                                .map(|result| {
+                                                    let mut parts = result.split(":");
+                                                    let path = PathBuf::from(
+                                                        parts.next().unwrap_or_default(),
+                                                    );
+                                                    format!(
+                                                        "[{}](file://{}) `{} {}` \n\n",
+                                                        path.file_name()
+                                                            .unwrap_or_default()
+                                                            .to_str()
+                                                            .unwrap_or_default(),
+                                                        path.display(),
+                                                        parts.next().unwrap_or_default(),
+                                                        parts.next().unwrap_or_default()
+                                                    )
+                                                })
+                                                .collect(),
                                             annotations: None,
                                             meta: None,
                                         }),
-                                    }]),
-                                    kind: None,
-                                    status: Some(ToolCallStatus::Completed),
-                                    title: None,
-                                    locations: None,
-                                    raw_input: None,
-                                    raw_output: None,
-                                },
-
-                                meta: None,
-                            });
-                        }
-                        if let Some(update) = update {
-                            if let Err(e) = self
-                                .client()
-                                .session_notification(SessionNotification {
-                                    session_id: session_id.clone(),
-                                    update: SessionUpdate::ToolCallUpdate(update),
-                                    meta: None,
-                                })
-                                .await
-                            {
-                                error!("Failed to send session notification: {:?}", e);
+                                    }]);
+                                }
                             }
-                        };
+                            AmpTool::Finder(_)
+                            | AmpTool::Glob(_)
+                            | AmpTool::Mermaid(_)
+                            | AmpTool::Oracle(_)
+                            | AmpTool::Read(_)
+                            | AmpTool::ReadMcpResource(_)
+                            | AmpTool::ReadWebPage(_)
+                            | AmpTool::Bash(_)
+                            | AmpTool::CreateFile(_)
+                            | AmpTool::TodoRead(_)
+                            | AmpTool::TodoWrite(_)
+                            | AmpTool::UndoEdit(_)
+                            | AmpTool::WebSearch(_)
+                            | AmpTool::Other(_) => {}
+                        }
+
+                        if let Err(e) = self
+                            .client()
+                            .session_notification(SessionNotification {
+                                session_id: session_id.clone(),
+                                update: SessionUpdate::ToolCallUpdate(update),
+                                meta: None,
+                            })
+                            .await
+                        {
+                            error!("Failed to send session notification: {:?}", e);
+                        }
                     }
                 }
             }
@@ -966,8 +977,7 @@ impl Agent for AmpAgent {
         let mut conversation_so_far: Option<AmpConversation> = None;
         let session_id = request.session_id;
 
-        let mut file_edits: HashMap<String, AmpEditFileToolCall> = HashMap::new();
-        let mut tasks: HashMap<String, AmpTaskToolCall> = HashMap::new();
+        let mut tool_calls: HashMap<String, AmpTool> = HashMap::new();
         loop {
             let res = (*self.amp_command)
                 .borrow_mut()
@@ -991,8 +1001,7 @@ impl Agent for AmpAgent {
                         self.process_conversation(
                             &conversation,
                             session_id.clone(),
-                            &mut file_edits,
-                            &mut tasks,
+                            &mut tool_calls,
                         )
                         .await;
                     }
