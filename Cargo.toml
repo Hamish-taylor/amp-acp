@@ -18,8 +18,8 @@ path = "src/main.rs"
 agent-client-protocol = "0.4.3"
 rand = "0.9.2"
 serde = { version = "1.0.226", features = ["derive"] }
-serde_json = "1.0.145"
 tokio = { version = "1", features = ["rt-multi-thread", "macros", "io-std", "io-util", "time"] }
 tokio-util = { version = "0.7", features = ["compat"] }
 tracing = { version = "0.1", features = ["log"] }
 async-trait = "0.1"
+serde_json_path_to_error = "0.1.5"
