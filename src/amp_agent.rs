@@ -1,3 +1,5 @@
+extern crate serde_json_path_to_error as serde_json;
+
 use agent_client_protocol::{
     Agent, AgentCapabilities, AgentSideConnection, AuthMethod, AuthMethodId, AuthenticateRequest,
     AuthenticateResponse, CancelNotification, Client, ContentBlock, Diff, EmbeddedResourceResource,
@@ -12,8 +14,6 @@ use agent_client_protocol::{
 use serde_json::Value;
 use std::cell::RefCell;
 use std::collections::HashMap;
-use std::collections::binary_heap::PeekMut;
-use std::fmt::format;
 use std::fs::File;
 use std::io::{Read, Write};
 use std::ops::Deref;
@@ -169,7 +169,11 @@ pub trait AmpDiff<T> {
     fn diff(&self, other: &T) -> Option<T>;
 }
 
-impl AmpConversation {
+trait PrettyPrintConversation {
+    fn pretty_print(&self) -> String;
+}
+
+impl PrettyPrintConversation for AmpConversation {
     fn pretty_print(&self) -> String {
         let mut output = String::new();
         for message in &self.messages {
@@ -181,12 +185,7 @@ impl AmpConversation {
                     }
                     AmpContentBlock::Thinking(_) => String::new(),
                     AmpContentBlock::ToolUse(amp_tool_use_content_block) => {
-                        format!(
-                            "**{}**",
-                            &amp_tool_use_content_block
-                                .content
-                                .to_title(&amp_tool_use_content_block.content)
-                        )
+                        format!("**{}**", &amp_tool_use_content_block.content.to_title())
                     }
                     AmpContentBlock::ToolResult(_) => String::new(),
                 };
@@ -341,6 +340,96 @@ pub struct AmpGrepToolResult {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct AmpAgenticToolResult {
+    progress: Option<Vec<AmpAgenticToolTurn>>,
+    result: Option<String>,
+    status: AmpOracleStatus,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct AmpAgenticToolTurn {
+    is_thinking: Option<bool>,
+    reasoning: Option<String>,
+    tool_uses: Option<Vec<AmpAgenticToolCall>>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct AmpAgenticToolCall {
+    #[serde(flatten)]
+    data: AmpAgenticTool,
+    status: AmpOracleStatus,
+}
+
+// AmpAgenticTool just renames the tag field during deserialization. This is gross and I wish it did not need to be like this.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct AmpAgenticTool(pub AmpTool);
+
+impl Serialize for AmpAgenticTool {
+    fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
+    where
+        S: serde::Serializer,
+    {
+        let mut value = serde_json::to_value(&self.0).map_err(serde::ser::Error::custom)?;
+        if let Some(obj) = value.as_object_mut() {
+            if let Some(name) = obj.remove("name") {
+                obj.insert("tool_name".to_string(), name);
+            }
+        }
+        value.serialize(serializer)
+    }
+}
+
+impl<'de> Deserialize<'de> for AmpAgenticTool {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: serde::Deserializer<'de>,
+    {
+        let mut value = serde_json::Value::deserialize(deserializer)?;
+        if let Some(obj) = value.as_object_mut() {
+            if let Some(tool_name) = obj.remove("tool_name") {
+                obj.insert("name".to_string(), tool_name);
+            }
+        }
+        Ok(AmpAgenticTool(
+            serde_json::from_value(value).map_err(serde::de::Error::custom)?,
+        ))
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub enum AmpOracleStatus {
+    #[serde(rename = "done")]
+    Done,
+    #[serde(rename = "in-progress")]
+    InProgress,
+}
+
+impl PrettyPrintConversation for AmpAgenticToolResult {
+    fn pretty_print(&self) -> String {
+        let mut output = String::new();
+        if let Some(progress) = &self.progress {
+            for message in progress {
+                if let Some(reasoning) = &message.reasoning {
+                    let mut l = String::new();
+                    l.push_str(&reasoning);
+                    l.push_str(" \n\n");
+                    output.push_str(&l);
+                }
+                if let Some(tool_uses) = &message.tool_uses {
+                    for tool_use in tool_uses {
+                        let mut l = String::new();
+                        l.push_str(&tool_use.data.0.to_title());
+                        l.push_str(" \n\n");
+                        output.push_str(&l);
+                    }
+                }
+            }
+        }
+        output
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct AmpReadToolCall {
     path: Option<String>,
     read_range: Option<Vec<i32>>,
@@ -378,7 +467,7 @@ pub struct AmpTaskToolCall {
 }
 
 impl AmpTool {
-    fn to_title(&self, content: &AmpTool) -> String {
+    fn to_title(&self) -> String {
         match self {
             AmpTool::Oracle(_) => "Consulting the Oracle".to_string(),
             AmpTool::Read(content) => {
@@ -577,9 +666,7 @@ impl AmpAgent {
                         }
                     }
                     AmpContentBlock::ToolUse(tool_use_content_block) => {
-                        let title = tool_use_content_block
-                            .content
-                            .to_title(&tool_use_content_block.content);
+                        let title = tool_use_content_block.content.to_title();
                         let mut content = vec![];
 
                         tool_calls.insert(
@@ -801,10 +888,21 @@ impl AmpAgent {
                                     }]);
                                 }
                             }
-                            AmpTool::Finder(_)
-                            | AmpTool::Glob(_)
+                            AmpTool::Finder(_) | AmpTool::Oracle(_) => {
+                                if let Ok(result) = serde_json::from_value::<AmpAgenticToolResult>(
+                                    tool_result_content_block.run.clone(),
+                                ) {
+                                    update.fields.content = Some(vec![ToolCallContent::Content {
+                                        content: ContentBlock::Text(TextContent {
+                                            annotations: None,
+                                            text: result.pretty_print(),
+                                            meta: None,
+                                        }),
+                                    }]);
+                                }
+                            }
+                            AmpTool::Glob(_)
                             | AmpTool::Mermaid(_)
-                            | AmpTool::Oracle(_)
                             | AmpTool::Read(_)
                             | AmpTool::ReadMcpResource(_)
                             | AmpTool::ReadWebPage(_)
